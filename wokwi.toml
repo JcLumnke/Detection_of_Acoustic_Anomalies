@@ -1,0 +1,7 @@
+[wokwi]
+version = 1
+firmware = 'build/detection_of_acoustic_anomalies.bin'
+elf = 'build/detection_of_acoustic_anomalies.elf'
+
+# Habilita o suporte a áudio (Microfone/Speaker) na simulação
+audio = true

@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "author": "Julio e Emanoel",
+  "editor": "wokwi",
+  "parts": [
+    {
+      "type": "board-esp32-s3-devkitc-1",
+      "id": "esp",
+      "top": -100,
+      "left": -110,
+      "attrs": {
+        "builder": "esp-idf"
+      }
+    },
+    {
+      "type": "wokwi-slide-switch",
+      "id": "mic_mock",
+      "top": 80,
+      "left": 170,
+      "attrs": {}
+    },
+    {
+      "type": "wokwi-led",
+      "id": "vcc_marker",
+      "top": 40,
+      "left": 240,
+      "attrs": {}
+    }
+  ],
+  "connections": [
+    [ "esp:TX", "$serialMonitor:RX", "", [] ],
+    [ "esp:RX", "$serialMonitor:TX", "", [] ],
+
+    [ "esp:GND.1", "mic_mock:1", "black", [] ],
+    [ "esp:3V3.1", "vcc_marker:A", "red", [] ],
+    [ "vcc_marker:C", "esp:GND.1", "black", [] ],
+
+    [ "esp:12", "mic_mock:2", "yellow", [] ],
+    [ "esp:13", "mic_mock:3", "green", [] ],
+    [ "esp:11", "mic_mock:1", "blue", [] ]
+  ]
+}
