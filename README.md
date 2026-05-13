@@ -236,17 +236,31 @@ As amostras incluem:
 
 ---
 
+# 👨‍🏫 Orientação Acadêmica
+
+Professor orientador:
+
+- Rodrigo Kobashikawa Rosa
+
+---
+
 # 👨‍💻 Autores
 
-Projeto desenvolvido para estudos de:
+Projeto desenvolvido por:
+
+- Julio Cesar Lumke
+- Emanoel Spanhol
+
+Áreas de pesquisa e desenvolvido:
 
 - TinyML
 - Edge AI
 - Sistemas embarcados inteligentes
 - Detecção de anomalias acústicas
+- Inteligência Artificial embarcada
 
 ---
 
 # 📜 Licença
 
-Projeto acadêmico e educacional.
+Projeto acadêmico e educacional desenvolvido para fins de estudo, pesquisa e experimentação em IA embarcada.
