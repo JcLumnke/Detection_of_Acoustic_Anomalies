@@ -1,6 +1,3 @@
-/* Copyright 2020 The TensorFlow Authors. All Rights Reserved.
-==============================================================================*/
-
 #include "tensorflow/lite/micro/micro_mutable_op_resolver.h"
 #include "tensorflow/lite/micro/micro_interpreter.h"
 #include "tensorflow/lite/micro/system_setup.h"
@@ -9,71 +6,89 @@
 
 #include "main_functions.h"
 #include "model.h"
-#include "constants.h"
-#include "output_handler.h"
+#include "test_data.h"
 
-// Globals, usados para compatibilidade com estilo Arduino.
 namespace {
+
 const tflite::Model* model = nullptr;
 tflite::MicroInterpreter* interpreter = nullptr;
 TfLiteTensor* input = nullptr;
 TfLiteTensor* output = nullptr;
-int inference_count = 0;
 
-// Ajuste 1: Aumentamos a arena porque o modelo agora tem mais camadas
-constexpr int kTensorArenaSize = 10240; 
+constexpr int kTensorArenaSize = 8 * 1024;
 uint8_t tensor_arena[kTensorArenaSize];
-}
+
+}  // namespace
 
 void setup() {
   tflite::InitializeTarget();
 
   model = tflite::GetModel(g_model);
+
   if (model->version() != TFLITE_SCHEMA_VERSION) {
-    MicroPrintf("Model schema version %d != supported %d.", 
-                model->version(), TFLITE_SCHEMA_VERSION);
+    MicroPrintf("Modelo incompatível!");
     return;
   }
 
-  // Ajuste 2: Aumentado para 3 operações para garantir suporte total
-  static tflite::MicroMutableOpResolver<3> resolver; 
+  static tflite::MicroMutableOpResolver<2> resolver;
+
   resolver.AddFullyConnected();
-  resolver.AddRelu();
-  // Às vezes o modelo quantizado usa a operação Reshape ou Quantize internamente
-  // Se continuar zerado, tente usar tflite::AllOpsResolver resolver;
+  resolver.AddLogistic();
 
   static tflite::MicroInterpreter static_interpreter(
-      model, resolver, tensor_arena, kTensorArenaSize);
+      model,
+      resolver,
+      tensor_arena,
+      kTensorArenaSize);
+
   interpreter = &static_interpreter;
 
   if (interpreter->AllocateTensors() != kTfLiteOk) {
-    MicroPrintf("AllocateTensors() failed");
+    MicroPrintf("Erro ao alocar tensores");
     return;
   }
 
   input = interpreter->input(0);
   output = interpreter->output(0);
-  inference_count = 0;
+
+  MicroPrintf("Modelo de anomalia acústica carregado!");
 }
 
 void loop() {
-  float position = static_cast<float>(inference_count) / static_cast<float>(kInferencesPerCycle);
-  float x = position * kXrange;
 
-  // A lógica de quantização abaixo está correta, DESDE QUE o modelo seja INT8
-  int8_t x_quantized = x / input->params.scale + input->params.zero_point;
-  input->data.int8[0] = x_quantized;
+  static int sample_index = 0;
 
+  // envia as 5 features para o modelo
+  for (int i = 0; i < 5; i++) {
+    input->data.f[i] = test_samples[sample_index][i];
+  }
+
+  // executa inferência
   if (interpreter->Invoke() != kTfLiteOk) {
-    MicroPrintf("Invoke failed\n");
+    MicroPrintf("Invoke failed");
     return;
   }
 
-  int8_t y_quantized = output->data.int8[0];
-  float y = (y_quantized - output->params.zero_point) * output->params.scale;
+  // saída do modelo
+  float probability = output->data.f[0];
 
-  HandleOutput(x, y);
+  int predicted = probability >= 0.5f ? 1 : 0;
+  int expected  = expected_labels[sample_index];
 
-  inference_count += 1;
-  if (inference_count >= kInferencesPerCycle) inference_count = 0;
+  MicroPrintf("=================================");
+  MicroPrintf("Sample %d", sample_index);
+
+  MicroPrintf("Probabilidade: %.4f", probability);
+
+  MicroPrintf("Esperado : %s",
+               expected ? "ANOMALIA" : "NORMAL");
+
+  MicroPrintf("Inferido : %s",
+               predicted ? "ANOMALIA" : "NORMAL");
+
+  sample_index++;
+
+  if (sample_index >= NUM_TEST_SAMPLES) {
+    sample_index = 0;
+  }
 }
