@@ -184,9 +184,9 @@ Inferido : ANOMALIA
 | **VDD** | 3.3V | VCC | Alimentação do sensor |
 | **GND** | GND | GND | Aterramento comum |
 | **L/R** | GND | - | Seleção de canal (Esquerdo) |
-| **SCK** | **GPIO 4** | `bclk` | Serial Clock (I2S) |
-| **WS** | **GPIO 5** | `ws` | Word Select (I2S) |
-| **SD** | **GPIO 6** | `din` | Serial Data (Entrada de Áudio) |
+| **SCK** | **GPIO 14** | `bclk` | Serial Clock (I2S) |
+| **WS** | **GPIO 15** | `ws` | Word Select (I2S) |
+| **SD** | **GPIO 13** | `din` | Serial Data (Entrada de Áudio) |
 
 > **Nota Técnica:** A pinagem está configurada no arquivo `microphone.cc` utilizando o driver I2S padrão do ESP-IDF. O GPIO 6 é utilizado para a entrada de dados (`din`).
 

@@ -33,10 +33,10 @@ void microphone_init() {
 
         .gpio_cfg = {
             .mclk = I2S_GPIO_UNUSED,
-            .bclk = GPIO_NUM_4,
-            .ws = GPIO_NUM_5,
+            .bclk = GPIO_NUM_14,
+            .ws = GPIO_NUM_15,
             .dout = I2S_GPIO_UNUSED,
-            .din = GPIO_NUM_6,
+            .din = GPIO_NUM_13,
 
             .invert_flags = {
                 .mclk_inv = false,
