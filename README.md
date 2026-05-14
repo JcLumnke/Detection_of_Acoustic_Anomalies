@@ -118,20 +118,23 @@ Classificação:
 detection_of_acoustic_anomalies/
 │
 ├── main/
-│   ├── main_functions.cc
-│   ├── model_data.cc
-│   ├── model.h
-│   ├── test_data.h
-│   ├── constants.h
-│   └── output_handler.cc
+│   ├── main.cc                # Ponto de entrada da aplicação
+│   ├── main_functions.cc      # Lógica principal (Setup/Loop)
+│   ├── microphone.cc          # Driver e captura do microfone I2S
+│   ├── microphone.h           # Cabeçalho e pinagem do microfone
+│   ├── model_data.cc          # Array do modelo TFLite convertido
+│   ├── model.h                # Cabeçalho do modelo
+│   ├── test_data.h            # Amostras para modo simulação
+│   ├── constants.h            # Definições de thresholds e parâmetros
+│   └── output_handler.cc      # Gerenciamento de logs e saídas
 │
-├── build/
+├── build/                     # Arquivos de compilação (gerados automaticamente)
 │
-├── simulation.png
+├── simulation.png             # Imagem da simulação Wokwi
 │
-├── README.md
+├── README.md                  # Documentação do projeto
 │
-└── CMakeLists.txt
+└── CMakeLists.txt             # Configuração do Build System (ESP-IDF)
 ```
 
 ---
@@ -174,6 +177,21 @@ Inferido : ANOMALIA
 
 ---
 
+### Tabela de Conexões de Hardware (Configuração Atual)
+
+| Pino do Sensor (INMP441) | Pino na Placa (ESP32-S3) | Função (Código) | Descrição |
+| :--- | :--- | :--- | :--- |
+| **VDD** | 3.3V | VCC | Alimentação do sensor |
+| **GND** | GND | GND | Aterramento comum |
+| **L/R** | GND | - | Seleção de canal (Esquerdo) |
+| **SCK** | **GPIO 4** | `bclk` | Serial Clock (I2S) |
+| **WS** | **GPIO 5** | `ws` | Word Select (I2S) |
+| **SD** | **GPIO 6** | `din` | Serial Data (Entrada de Áudio) |
+
+> **Nota Técnica:** A pinagem está configurada no arquivo `microphone.cc` utilizando o driver I2S padrão do ESP-IDF. O GPIO 6 é utilizado para a entrada de dados (`din`).
+
+---
+
 # 🚀 Como Compilar
 
 ## 1. Clonar o projeto
@@ -208,6 +226,17 @@ idf.py flash monitor
 
 ---
 
+# ⚙️ Modos de Operação
+
+O projeto possui dois modos de funcionamento controlados por uma constante no arquivo `main_functions.cc`. Para alternar entre eles, basta alterar a linha:
+
+```cpp
+#define SIMULATION_MODE true  // Habilita Modo Simulação
+// ou
+#define SIMULATION_MODE false // Habilita Modo Sensor Real
+
+---
+
 # 📊 Dataset Utilizado
 
 O projeto utiliza dados alinhados com distribuições estatísticas inspiradas em:
@@ -225,11 +254,16 @@ As amostras incluem:
 
 ---
 
-# 🔮 Próximos Passos
+# 🔮 Funcionalidades Implementadas
 
 - Integração com microfone I2S real
 - Captura acústica em tempo real
 - Deploy físico em ESP32-S3
+
+---
+
+# 🔮 Próximos Passos
+
 - Streaming serial de features
 - Dashboard de monitoramento
 - Detecção online contínua
