@@ -8,6 +8,8 @@
 #include "model.h"
 #include "test_data.h"
 
+#define SIMULATION_MODE true
+
 namespace {
 
 const tflite::Model* model = nullptr;
@@ -52,16 +54,38 @@ void setup() {
   output = interpreter->output(0);
 
   MicroPrintf("Modelo de anomalia acústica carregado!");
+
+#if SIMULATION_MODE
+  MicroPrintf("Modo: SIMULACAO (dataset de teste)");
+#else
+  MicroPrintf("Modo: SENSOR REAL");
+#endif
 }
 
 void loop() {
 
   static int sample_index = 0;
 
-  // envia as 5 features para o modelo
+#if SIMULATION_MODE
+
+  // envia as 5 features do dataset para o modelo
   for (int i = 0; i < 5; i++) {
     input->data.f[i] = test_samples[sample_index][i];
   }
+
+#else
+
+  // TODO:
+  // Aqui entrarão as features vindas do sensor real
+  // Exemplo:
+  //
+  // input->data.f[0] = rms;
+  // input->data.f[1] = peak;
+  // input->data.f[2] = kurtosis;
+  // input->data.f[3] = skewness;
+  // input->data.f[4] = crest_factor;
+
+#endif
 
   // executa inferência
   if (interpreter->Invoke() != kTfLiteOk) {
