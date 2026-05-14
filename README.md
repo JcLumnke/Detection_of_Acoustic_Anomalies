@@ -234,7 +234,7 @@ O projeto possui dois modos de funcionamento controlados por uma constante no ar
 #define SIMULATION_MODE true  // Habilita Modo Simulação
 // ou
 #define SIMULATION_MODE false // Habilita Modo Sensor Real
-
+```
 ---
 
 # 📊 Dataset Utilizado
