@@ -14,7 +14,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-#define SIMULATION_MODE false
+#define SIMULATION_MODE true // Altere para false para testar a placa fisica.
 
 namespace {
 
@@ -116,8 +116,6 @@ void loop() {
 
   if (microphone_read(audio_buffer, MFCC_FRAME_SIZE)) {
 
-    // Remove DC offset antes de calcular RMS — o INMP441 tem bias DC
-    // que mantinha o RMS em ~0.5 mesmo sem som, mascarando variações reais
     float mean = 0.0f;
     for (int i = 0; i < MFCC_FRAME_SIZE; i++) mean += audio_buffer[i];
     mean /= MFCC_FRAME_SIZE;
