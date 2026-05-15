@@ -8,7 +8,7 @@
 static const char* TAG = "MICROPHONE";
 
 #define SAMPLE_RATE 16000
-#define BUFFER_SIZE 480
+#define BUFFER_SIZE 1024
 
 static i2s_chan_handle_t rx_chan = NULL;
 
@@ -59,7 +59,7 @@ void microphone_init() {
 
 bool microphone_read(float* buffer, int samples) {
 
-    int32_t raw_buffer[BUFFER_SIZE];
+    static int32_t raw_buffer[BUFFER_SIZE];
 
     size_t bytes_read = 0;
 
