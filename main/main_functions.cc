@@ -169,8 +169,6 @@ void loop() {
     MicroPrintf("Probabilidade        : %.4f", probability);
     MicroPrintf("Media (5 frames)     : %.4f", avg_prob);
     MicroPrintf("Inferido             : %s", predicted ? "*** ANOMALIA ***" : "NORMAL");
-
-    vTaskDelay(pdMS_TO_TICKS(1000));
   }
 
 #endif
