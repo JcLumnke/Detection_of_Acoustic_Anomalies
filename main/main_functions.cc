@@ -9,9 +9,12 @@
 #include "test_data.h"
 #include "microphone.h"
 #include "feature_scaler.h"
+#include "mfcc.h"
 #include <math.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
-#define SIMULATION_MODE true
+#define SIMULATION_MODE false
 
 namespace {
 
@@ -20,15 +23,30 @@ tflite::MicroInterpreter* interpreter = nullptr;
 TfLiteTensor* input = nullptr;
 TfLiteTensor* output = nullptr;
 
-constexpr int kTensorArenaSize = 8 * 1024;
+constexpr int kTensorArenaSize = 32 * 1024;
 uint8_t tensor_arena[kTensorArenaSize];
 
-float audio_buffer[480];
+float audio_buffer[MFCC_FRAME_SIZE];
+
+// Suavização temporal: média móvel das últimas 5 inferências (~5 segundos).
+// Só classifica ANOMALIA se a média for >= 0.70 — reduz falsos positivos
+// de frames isolados fora da distribuição de treino.
+static float prob_history[5] = {};
+static int   prob_idx = 0;
+
+static const char* kMfccNames[13] = {
+    "Energia     ", "Inclinacao  ", "Curvatura   ",
+    "Forma-3     ", "Forma-4     ", "Forma-5     ",
+    "Forma-6     ", "Forma-7     ", "Forma-8     ",
+    "Forma-9     ", "Forma-10    ", "Forma-11    ",
+    "Forma-12    "
+};
 
 }  // namespace
 
 void setup() {
   tflite::InitializeTarget();
+  mfcc_init();
 
   model = tflite::GetModel(g_model);
 
@@ -38,16 +56,12 @@ void setup() {
   }
 
   static tflite::MicroMutableOpResolver<3> resolver;
-
   resolver.AddFullyConnected();
   resolver.AddRelu();
   resolver.AddLogistic();
 
   static tflite::MicroInterpreter static_interpreter(
-      model,
-      resolver,
-      tensor_arena,
-      kTensorArenaSize);
+      model, resolver, tensor_arena, kTensorArenaSize);
 
   interpreter = &static_interpreter;
 
@@ -56,10 +70,10 @@ void setup() {
     return;
   }
 
-  input = interpreter->input(0);
+  input  = interpreter->input(0);
   output = interpreter->output(0);
 
-  MicroPrintf("Modelo de anomalia acústica carregado!");
+  MicroPrintf("Modelo MFCC+MLP carregado!");
 
 #if SIMULATION_MODE
   MicroPrintf("Modo: SIMULACAO (dataset de teste)");
@@ -74,7 +88,7 @@ void loop() {
 #if SIMULATION_MODE
   static int sample_index = 0;
 
-  for (int i = 0; i < 5; i++) {
+  for (int i = 0; i < MFCC_N_COEFFS; i++) {
     input->data.f[i] = test_samples[sample_index][i];
   }
 
@@ -90,99 +104,73 @@ void loop() {
   MicroPrintf("=================================");
   MicroPrintf("Sample %d", sample_index);
   MicroPrintf("Probabilidade: %.4f", probability);
-  MicroPrintf("Esperado : %s", expected ? "ANOMALIA" : "NORMAL");
+  MicroPrintf("Esperado : %s", expected  ? "ANOMALIA" : "NORMAL");
   MicroPrintf("Inferido : %s", predicted ? "ANOMALIA" : "NORMAL");
 
   sample_index++;
-  if (sample_index >= NUM_TEST_SAMPLES) {
-    sample_index = 0;
-  }
+  if (sample_index >= NUM_TEST_SAMPLES) sample_index = 0;
+
+  vTaskDelay(pdMS_TO_TICKS(1000));
 
 #else
 
-  if (microphone_read(audio_buffer, 480)) {
+  if (microphone_read(audio_buffer, MFCC_FRAME_SIZE)) {
 
-    const int N = 480;
+    // Remove DC offset antes de calcular RMS — o INMP441 tem bias DC
+    // que mantinha o RMS em ~0.5 mesmo sem som, mascarando variações reais
     float mean = 0.0f;
+    for (int i = 0; i < MFCC_FRAME_SIZE; i++) mean += audio_buffer[i];
+    mean /= MFCC_FRAME_SIZE;
+
     float rms = 0.0f;
-    float peak = 0.0f;
-
-    // 1. Primeiro Passo: Calcular apenas a MÉDIA
-    for (int i = 0; i < N; i++) {
-        mean += audio_buffer[i];
+    for (int i = 0; i < MFCC_FRAME_SIZE; i++) {
+      float ac = audio_buffer[i] - mean;
+      rms += ac * ac;
     }
-    mean /= N;
+    rms = sqrtf(rms / MFCC_FRAME_SIZE);
 
-    // 2. Segundo Passo: Calcular RMS LIMPO (subtraindo a média) e o PICO
-    for (int i = 0; i < N; i++) {
-        float x_limpo = audio_buffer[i] - mean;
-        rms += x_limpo * x_limpo;
-
-        if (fabs(audio_buffer[i]) > peak) {
-            peak = fabs(audio_buffer[i]);
-        }
-    }
-    rms = sqrtf(rms / N);
-
-    MicroPrintf("RMS atual: %.5f", rms);
-
-    if (rms < 0.40f) {   // alterar aqui para detectar mais ou menos ruido ambiente
-      // Aumentando o valor ele detecta menos  o ruido do ambiente.
-        MicroPrintf("Silencio detectado");
-        return;
+    if (rms < 0.02f) {
+      MicroPrintf("Silencio (RMS_AC=%.4f)", rms);
+      return;
     }
 
-    // variância
-    float variance = 0.0f;
-    for (int i = 0; i < N; i++) {
-        float d = audio_buffer[i] - mean;
-        variance += d * d;
-    }
-    variance /= N;
+    float mfcc_features[MFCC_N_COEFFS];
+    mfcc_compute(audio_buffer, mfcc_features);
 
-    float stddev = sqrtf(variance + 1e-8f);
-
-    // skewness + kurtosis
-    float skewness = 0.0f;
-    float kurtosis = 0.0f;
-
-    for (int i = 0; i < N; i++) {
-        float d = audio_buffer[i] - mean;
-        skewness += d * d * d;
-        kurtosis += d * d * d * d;
+    for (int i = 0; i < MFCC_N_COEFFS; i++) {
+      input->data.f[i] = (mfcc_features[i] - kScalerMean[i]) / kScalerStd[i];
     }
 
-    skewness /= (N * stddev * stddev * stddev + 1e-8f);
-    kurtosis /= (N * variance * variance + 1e-8f);
-
-    // crest factor
-    float crest_factor = peak / (rms + 1e-6f);
-
-    // normalização e envio para o modelo
-    float features[5] = {rms, peak, kurtosis, skewness, crest_factor};
-    for (int i = 0; i < 5; i++) {
-        input->data.f[i] = (features[i] - kScalerMean[i]) / kScalerStd[i];
-    }
-
-    // inferência
     if (interpreter->Invoke() != kTfLiteOk) {
-        MicroPrintf("Invoke failed");
-        return;
+      MicroPrintf("Invoke failed");
+      return;
     }
 
     float probability = output->data.f[0];
 
-    int predicted = probability >= 0.33f ? 1 : 0; //alterar aqui para ser mais ou menos conservador
-    // Ao diminuir o valor a IA fica mais sensivel e detecta as anomalias mais cedo.
+    prob_history[prob_idx] = probability;
+    prob_idx = (prob_idx + 1) % 5;
+    float avg_prob = 0.0f;
+    for (int i = 0; i < 5; i++) avg_prob += prob_history[i];
+    avg_prob /= 5.0f;
+    int predicted = avg_prob >= 0.70f ? 1 : 0;
+
+    char bar[21];
+    int filled = (int)(rms * 100.0f);  // escala: 0.20 RMS_AC = barra cheia
+    if (filled > 20) filled = 20;
+    for (int i = 0; i < 20; i++) bar[i] = (i < filled) ? '#' : '.';
+    bar[20] = '\0';
 
     MicroPrintf("=================================");
-    MicroPrintf("RMS          : %.5f", rms);
-    MicroPrintf("Peak         : %.5f", peak);
-    MicroPrintf("Kurtosis     : %.5f", kurtosis);
-    MicroPrintf("Skewness     : %.5f", skewness);
-    MicroPrintf("Crest Factor : %.5f", crest_factor);
-    MicroPrintf("Probabilidade: %.5f", probability);
-    MicroPrintf("Inferido     : %s", predicted ? "ANOMALIA" : "NORMAL");
+    MicroPrintf("Audio [%s] %.3f", bar, rms);
+    for (int i = 0; i < MFCC_N_COEFFS; i++) {
+      MicroPrintf("MFCC[%02d] %s: %.4f", i, kMfccNames[i], mfcc_features[i]);
+    }
+    MicroPrintf("Probabilidade        : %.4f", probability);
+    MicroPrintf("Media (5 frames)     : %.4f", avg_prob);
+    MicroPrintf("Inferido             : %s", predicted ? "*** ANOMALIA ***" : "NORMAL");
+
+    vTaskDelay(pdMS_TO_TICKS(1000));
   }
 
 #endif

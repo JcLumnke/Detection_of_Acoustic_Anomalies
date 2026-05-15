@@ -10,11 +10,13 @@ idf_component_register(
         output_handler.cc
         model_data.cc
         microphone.cc
+        mfcc.cc
 
     PRIV_REQUIRES
         spi_flash
         esp_driver_i2s
         esp_driver_gpio
+        freertos
 
     INCLUDE_DIRS
         ""

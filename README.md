@@ -8,10 +8,6 @@ O projeto executa um modelo de Machine Learning embarcado capaz de identificar p
 
 # 📸 Simulação no Wokwi
 
-```text
-simulation.png
-```
-
 ![Simulação Wokwi](simulation.png)
 
 ---
@@ -20,20 +16,18 @@ simulation.png
 
 Este projeto demonstra a implementação de um pipeline completo de IA embarcada:
 
-- Pré-processamento de sinais
-- Extração de features acústicas
-- Normalização estatística das features
+- Captura de áudio via microfone I2S
+- Extração de features acústicas (MFCC)
+- Normalização estatística embarcada
 - Inferência TinyML em microcontrolador
 - Classificação de anomalias em tempo real
-- Simulação no Wokwi
-- Compatibilidade com hardware físico ESP32-S3
+- Simulação no Wokwi e deploy em hardware físico
 
 O sistema foi projetado para aplicações de:
 
 - Manutenção preditiva
 - Monitoramento industrial
 - Detecção de falhas mecânicas
-- Análise de vibração
 - Edge AI / TinyML
 
 ---
@@ -53,9 +47,8 @@ Entrada (5 features) → FullyConnected(5→1) → Logistic → Probabilidade
 **Características:**
 - 6 parâmetros treináveis
 - 680 bytes em flash
-- Inferência float32
-- Acurácia: 99.1% treino / 99.0% val / 99.3% teste
-- Features brutas sem normalização
+- Features: RMS, Peak, Kurtosis, Skewness, Crest Factor (brutas, sem normalização)
+- Acurácia: 99.1% treino / 99.0% val / 99.3% teste (dataset sintético)
 
 **Pesos aprendidos:**
 
@@ -69,36 +62,35 @@ Entrada (5 features) → FullyConnected(5→1) → Logistic → Probabilidade
 | Bias (b) | −2.7500 |
 
 **Limitações identificadas:**
-- Features com escalas muito diferentes (RMS ~0.1, kurtosis ~15) sem normalização
-- Capacidade expressiva limitada — modelo linear sem camadas ocultas
+- Features com escalas muito diferentes sem normalização
+- Modelo linear sem capacidade de aprender padrões complexos
 - `test_data.h` com amostras brutas não normalizadas
 
 ---
 
-## V1.2 — MLP com Normalização (versão atual)
+## V1.2 — MLP com Normalização
 
-Evolução para uma rede neural multicamada (MLP) com pré-processamento de normalização embarcado.
+Evolução para rede neural multicamada com pré-processamento de normalização embarcado.
 
 **Arquitetura:**
 
 ```
 Entrada (5 features)
-    ↓  [normalização StandardScaler]
+    ↓  [StandardScaler]
 Dense(8,  relu)   →  48 parâmetros
     ↓
 Dense(16, relu)   → 144 parâmetros
     ↓
 Dense(32, relu)   → 544 parâmetros
     ↓
-Dense(1, sigmoid) →  33 parâmetros  ← regressão logística na saída
+Dense(1, sigmoid) →  33 parâmetros
 ```
 
 **Características:**
 - 769 parâmetros treináveis
 - 5.664 bytes em flash
-- Inferência float32
+- Normalização StandardScaler embarcada em `feature_scaler.h`
 - Acurácia: 100% treino / 100% val / 100% teste
-- Features normalizadas via StandardScaler antes da inferência
 
 **O que mudou em relação à V1.0:**
 
@@ -110,88 +102,162 @@ Dense(1, sigmoid) →  33 parâmetros  ← regressão logística na saída
 | Normalização | Não | StandardScaler embarcado |
 | Camadas ocultas | 0 | 3 (8 → 16 → 32 neurônios) |
 | Ops TFLite Micro | FC + Logistic | FC + ReLU + Logistic |
-| `test_data.h` | Amostras brutas | Amostras normalizadas |
-
-**Por que MLP em vez de CNN?**
-
-As 5 features estatísticas (RMS, Peak, Kurtosis, Skewness, Crest Factor) já são extraídas antes da inferência. Uma CNN seria adequada se o modelo recebesse o sinal bruto de áudio (os 480 samples) para detectar padrões locais. Como o pré-processamento já transforma o sinal em um vetor compacto de features, a MLP é a escolha correta — mais leve e igualmente eficaz.
 
 **Nota sobre quantização INT8:**
-A quantização foi avaliada para reduzir o tamanho do modelo, mas não trouxe benefício mensurável: o modelo possui apenas 769 parâmetros (~3KB de pesos), e o overhead do formato flatbuffer do TFLite domina o tamanho total. Quantização INT8 só é vantajosa em modelos com centenas de milhares de parâmetros.
+Avaliada e descartada — com apenas 769 parâmetros o overhead do formato flatbuffer domina o tamanho total. Quantização INT8 só é vantajosa em modelos com centenas de milhares de parâmetros.
 
 ---
 
-# 🧠 Arquitetura do Modelo (V1.2)
+## Teste com Hardware Real — Problema de Calibração (entre V1.2 e V2.0)
 
-## Features utilizadas
+Durante os testes com a placa física, identificou-se incompatibilidade entre o dataset sintético e o sensor real:
 
-| Feature | Descrição |
-|---|---|
-| RMS | Energia média do sinal (DC removido) |
-| Peak | Pico máximo absoluto |
-| Kurtosis | Detecção de impulsos mecânicos |
-| Skewness | Assimetria estatística do sinal |
-| Crest Factor | Relação pico/RMS |
+**Problema:** o dataset sintético treinava NORMAL com RMS ~0.10, mas o sensor em ambiente real apresentava RMS ~0.42–0.43. O modelo classificava tudo como ANOMALIA.
 
-## Normalização StandardScaler
+**Correção aplicada na V1.2:**
 
-Antes de entrar no modelo, cada feature é normalizada com os parâmetros calculados no treinamento e embarcados em `feature_scaler.h`:
-
-```
-x_normalizado = (x - média) / desvio_padrão
-```
-
-| Feature | Média | Desvio Padrão |
+| Parâmetro | Antes | Depois |
 |---|---|---|
-| RMS | 0.2416 | 0.1589 |
-| Peak | 0.7495 | 0.6439 |
-| Kurtosis | 8.8263 | 6.8577 |
-| Skewness | 0.7256 | 0.7065 |
-| Crest Factor | 2.5631 | 0.9842 |
+| RMS NORMAL (treino) | ~0.10 | ~0.50 |
+| RMS ANOMALIA (treino) | ~0.38 | ~0.75 |
+| Threshold de silêncio | 0.40 | 0.45 |
+
+**Lição aprendida:** features estatísticas como RMS, Kurtosis e Skewness não são suficientes para diferenciar motor saudável de ruído ambiente — ambos podem ter distribuições estatísticas similares. A solução foi migrar para features espectrais (MFCC).
 
 ---
 
-# 🔬 Pipeline de Processamento
+## V2.0 — MFCC + MLP (versão atual)
 
-## 1. Captura do sinal
+Substituição completa do pipeline de features: as 5 features estatísticas foram trocadas por **13 coeficientes MFCC**, implementados diretamente no firmware em C.
 
-O sistema recebe frames de 480 amostras via I2S (microfone INMP441) ou dataset simulado contendo:
+**Motivação:** MFCC captura o timbre sonoro do motor (distribuição de energia nas frequências), que é muito mais discriminativo do que estatísticas de amplitude. Um motor saudável e um com falha têm assinaturas espectrais distintas mesmo com RMS similar.
 
-- ruído normal
-- transientes
-- impulsos mecânicos
-- assinaturas acústicas
+**Pipeline completo:**
 
-## 2. Pré-processamento HHT + UKF
+```
+Microfone INMP441 (I2S @ 16kHz)
+    ↓
+Frame de 1024 amostras (64ms)
+    ↓
+Remoção de offset DC (subtração da média do frame)
+    ↓
+Filtro de silêncio (RMS_AC < 0.02 → descarta)
+    ↓
+Pré-ênfase (α=0.97)
+    ↓
+Janela Hamming
+    ↓
+FFT 1024 pontos
+    ↓
+Banco de 26 filtros Mel (20Hz – 8kHz)
+    ↓
+Log + DCT
+    ↓
+13 coeficientes MFCC
+    ↓
+StandardScaler
+    ↓
+MLP(13→16→32→1)
+    ↓
+Probabilidade instantânea [0.0 – 1.0]
+    ↓
+Média móvel (5 frames ≈ 5s)
+    ↓
+Decisão: média ≥ 0.70 → ANOMALIA
+```
 
-O pipeline aplica:
+**Arquitetura do modelo:**
 
-- EMA (Exponential Moving Average)
-- HHT-inspired filtering
-- suavização adaptativa tipo UKF
+```
+Entrada (13 MFCCs)
+    ↓  [StandardScaler]
+Dense(16, relu)   → 224 parâmetros
+    ↓
+Dense(32, relu)   → 544 parâmetros
+    ↓
+Dense(1, sigmoid) →  33 parâmetros
+```
 
-Objetivos:
+**Características:**
+- 801 parâmetros treináveis
+- Features: 13 coeficientes MFCC normalizados
+- Frame: 1024 amostras @ 16kHz (64ms)
+- FFT implementada em C (radix-2 Cooley-Tukey) no próprio firmware
+- Suavização temporal: média móvel de 5 frames (~5 segundos) com threshold 0.70
+- Acurácia: 91.9% treino / 86.5% val / 81.0% teste
 
-- remover drift
-- reduzir ruído
-- preservar transientes de falha
+> A acurácia menor que a V1.2 (sintética) é esperada e intencional: o dataset V2.0 foi
+> calibrado para reproduzir a distribuição MFCC do sensor real, criando sobreposição
+> genuína entre classes — o modelo é mais honesto e robusto em hardware real.
 
-## 3. Extração de Features
+**O que mudou em relação à V1.2:**
 
-As 5 features estatísticas são calculadas para cada frame de áudio.
+| Aspecto | V1.2 | V2.0 |
+|---|---|---|
+| Features | 5 estatísticas (RMS, Peak...) | 13 MFCCs |
+| Extração | Loop simples sobre o buffer | FFT → Mel → log → DCT |
+| Buffer de áudio | 480 amostras (30ms) | 1024 amostras (64ms) |
+| Discriminação | Amplitude / forma do sinal | Timbre / espectro de frequências |
+| Remoção de DC | Não | Sim (média do frame subtraída antes do RMS) |
+| Threshold de silêncio | RMS bruto ≥ 0.45 | RMS_AC < 0.02 |
+| Decisão | P ≥ 0.50 (1 frame) | Média(5 frames) ≥ 0.70 |
+| Arquivos novos | — | `mfcc.cc`, `mfcc.h` |
+| Parâmetros do modelo | 769 | 801 |
+| Robustez em hardware real | Baixa | Alta |
 
-## 4. Normalização
+**Dataset de treinamento V2.0:**
 
-As features são normalizadas com os parâmetros do StandardScaler embarcados antes de entrar na rede.
+Gerado com síntese de áudio calibrada empiricamente para reproduzir a distribuição MFCC do sensor real (INMP441):
+- **Sinal base**: ruído branco + harmônicos (fundamental 80–200 Hz, 5 parciais) com escala U[0.5, 2.0]
+  - Garante MFCC[1] na faixa −44..−31 (sensor real: −38 ± 5–8)
+- **NORMAL**: sinal base normalizado × amplitude U[0.45, 0.70]
+- **ANOMALIA**: sinal base + 3–10 impulsos aleatórios (amplitude 1.5–3.5×), normalizado × U[0.65, 0.90]
 
-## 5. Inferência TinyML
+---
 
-O vetor normalizado de 5 features percorre as 3 camadas ocultas do MLP e produz uma probabilidade de anomalia entre 0.0 e 1.0.
+# 🧠 Arquitetura do Modelo (V2.0 — atual)
 
-Classificação:
+## Features: 13 coeficientes MFCC
 
-- `NORMAL` — probabilidade < threshold
-- `ANOMALIA` — probabilidade ≥ threshold
+| Coeficiente | Nome | Representa |
+|---|---|---|
+| MFCC[0] | Energia | Energia global (espectro médio) |
+| MFCC[1] | Inclinação | Inclinação do envelope espectral |
+| MFCC[2] | Curvatura | Curvatura do envelope espectral |
+| MFCC[3–12] | Forma-3..12 | Detalhes finos do timbre sonoro |
+
+## Parâmetros MFCC
+
+| Parâmetro | Valor |
+|---|---|
+| Taxa de amostragem | 16.000 Hz |
+| Tamanho do frame | 1024 amostras (64ms) |
+| Filtros Mel | 26 (20Hz – 8kHz) |
+| Coeficientes DCT | 13 |
+| Pré-ênfase | α = 0.97 |
+| Janela | Hamming |
+
+---
+
+# 🔬 Pipeline de Processamento (V2.0)
+
+**1. Captura:** 1024 amostras via I2S (INMP441 @ 16kHz)
+
+**2. Remoção de offset DC:** subtrai a média do frame do sinal antes do RMS
+- O INMP441 apresenta bias DC que mantinha o RMS bruto em ~0.5 mesmo sem som
+
+**3. Filtro de silêncio:** descarta frame se RMS_AC < 0.02
+
+**4. MFCC (`mfcc.cc`):**
+- Pré-ênfase → Hamming → FFT 1024pts → Espectro de potência → 26 filtros Mel → log → DCT → 13 coeficientes
+
+**5. Normalização:** StandardScaler com parâmetros de `feature_scaler.h`
+
+**6. Inferência:** MLP(13→16→32→1) via TFLite Micro
+
+**7. Suavização temporal:** média móvel das últimas 5 probabilidades (~5 segundos)
+
+**8. Decisão:** média ≥ 0.70 → ANOMALIA (reduz falsos positivos de frames isolados)
 
 ---
 
@@ -201,23 +267,24 @@ Classificação:
 detection_of_acoustic_anomalies/
 │
 ├── main/
-│   ├── main.cc                # Ponto de entrada da aplicação
+│   ├── main.cc                # Ponto de entrada
 │   ├── main_functions.cc      # Lógica principal (Setup/Loop)
-│   ├── microphone.cc          # Driver e captura do microfone I2S
-│   ├── microphone.h           # Cabeçalho e pinagem do microfone
-│   ├── model_data.cc          # Array do modelo TFLite (MLP V1.2)
+│   ├── mfcc.cc                # Implementação MFCC (FFT + Mel + DCT)
+│   ├── mfcc.h                 # Parâmetros e interface MFCC
+│   ├── microphone.cc          # Driver I2S (1024 samples @ 16kHz)
+│   ├── microphone.h           # Interface do microfone
+│   ├── model_data.cc          # Array do modelo TFLite (MFCC+MLP V2.0)
 │   ├── model.h                # Cabeçalho do modelo
-│   ├── feature_scaler.h       # Constantes StandardScaler para normalização
-│   ├── test_data.h            # Amostras normalizadas para modo simulação
-│   ├── constants.h            # Definições de thresholds e parâmetros
-│   └── output_handler.cc      # Gerenciamento de logs e saídas
+│   ├── feature_scaler.h       # StandardScaler para 13 MFCCs
+│   ├── test_data.h            # Amostras MFCC normalizadas (simulação)
+│   └── output_handler.cc      # Logs e saídas
 │
-├── train_models.py            # Script de treinamento (gera model_data.cc, feature_scaler.h, test_data.h)
-├── model_mlp.tflite           # Modelo TFLite gerado pelo treinamento
-├── build/                     # Arquivos de compilação (gerados automaticamente)
-├── simulation.png             # Imagem da simulação Wokwi
-├── README.md                  # Documentação do projeto
-└── CMakeLists.txt             # Configuração do Build System (ESP-IDF)
+├── train_models.py            # Treinamento: síntese de áudio → MFCC → MLP
+├── model_mfcc_mlp.tflite      # Modelo TFLite V2.0
+├── build/                     # Gerado automaticamente
+├── simulation.png             # Simulação Wokwi
+├── README.md
+└── CMakeLists.txt
 ```
 
 ---
@@ -234,51 +301,51 @@ Esperado : ANOMALIA
 Inferido : ANOMALIA
 ```
 
-## Modo Sensor Real
+## Modo Sensor Real (V2.0)
 
 ```text
 =================================
-RMS          : 0.38412
-Peak         : 0.91034
-Kurtosis     : 14.23100
-Skewness     : 1.41200
-Crest Factor : 3.76500
-Probabilidade: 0.96700
-Inferido     : ANOMALIA
+Audio [#####...............] 0.052
+MFCC[00] Energia     : 98.3214
+MFCC[01] Inclinacao  : -37.8412
+MFCC[02] Curvatura   : 2.1034
+MFCC[03] Forma-3     : -1.8762
+...
+MFCC[12] Forma-12    : -0.9421
+Probabilidade        : 0.8214
+Media (5 frames)     : 0.7341
+Inferido             : *** ANOMALIA ***
 ```
+
+A barra `[###...]` representa o nível de áudio AC (20 `#` = RMS_AC ≥ 0.20).
 
 ---
 
 # ⚙️ Modos de Operação
 
-O projeto possui dois modos de funcionamento controlados por uma constante no arquivo `main_functions.cc`:
-
 ```cpp
-#define SIMULATION_MODE true  // Habilita Modo Simulação
-// ou
-#define SIMULATION_MODE false // Habilita Modo Sensor Real
+#define SIMULATION_MODE true  // dataset de teste pré-computado
+#define SIMULATION_MODE false // microfone real com extração MFCC
 ```
 
-| Modo | Fonte de dados | Normalização |
+| Modo | Fonte | MFCC |
 |---|---|---|
-| Simulação | `test_data.h` (amostras pré-normalizadas) | Já aplicada nas amostras |
-| Sensor Real | Microfone INMP441 via I2S | Aplicada em tempo real via `feature_scaler.h` |
+| Simulação | `test_data.h` (pré-normalizado) | Pré-calculado no Python |
+| Sensor Real | INMP441 via I2S | Calculado em tempo real no ESP32-S3 |
 
 ---
 
 # 🔁 Retreinando o Modelo
 
-Para regenerar o modelo (ex.: com novos dados ou nova arquitetura):
-
 ```bash
-pip install tensorflow numpy
+pip install tensorflow numpy scipy
 python train_models.py
 ```
 
-O script gera automaticamente:
-- `main/model_data.cc` — modelo atualizado
-- `main/feature_scaler.h` — novos parâmetros de normalização
-- `main/test_data.h` — novas amostras de simulação
+Gera automaticamente:
+- `main/model_data.cc` — novo modelo
+- `main/feature_scaler.h` — parâmetros de normalização dos MFCCs
+- `main/test_data.h` — amostras de simulação atualizadas
 
 ---
 
@@ -290,22 +357,22 @@ O script gera automaticamente:
 | ESP32-S3 | Microcontrolador |
 | TensorFlow Lite Micro | Inferência TinyML |
 | Wokwi | Simulação |
-| Python + TensorFlow/Keras | Treinamento do modelo |
-| NumPy | Processamento numérico e geração do dataset |
+| Python + TensorFlow/Keras | Treinamento |
+| NumPy + SciPy | Processamento de sinais e MFCC |
 | TinyML | IA embarcada |
 
 ---
 
 # 🔌 Conexões de Hardware (INMP441)
 
-| Pino do Sensor | Pino ESP32-S3 | Função | Descrição |
-|:---|:---|:---|:---|
-| **VDD** | 3.3V | VCC | Alimentação |
-| **GND** | GND | GND | Aterramento |
-| **L/R** | GND | — | Canal esquerdo |
-| **SCK** | **GPIO 14** | `bclk` | Serial Clock (I2S) |
-| **WS** | **GPIO 15** | `ws` | Word Select (I2S) |
-| **SD** | **GPIO 13** | `din` | Serial Data |
+| Pino do Sensor | Pino ESP32-S3 | Função |
+|:---|:---|:---|
+| **VDD** | 3.3V | Alimentação |
+| **GND** | GND | Aterramento |
+| **L/R** | GND | Canal esquerdo |
+| **SCK** | **GPIO 14** | Serial Clock (I2S) |
+| **WS** | **GPIO 15** | Word Select (I2S) |
+| **SD** | **GPIO 13** | Serial Data |
 
 ---
 
@@ -314,30 +381,33 @@ O script gera automaticamente:
 ```bash
 git clone <repositorio>
 cd detection_of_acoustic_anomalies
-idf.py build
-idf.py flash monitor
+get_idf                          # ativa o ambiente ESP-IDF
+idf.py build && idf.py flash monitor
 ```
 
 ---
 
-# 📊 Dataset Utilizado
+# 📊 Dataset
 
-O projeto utiliza dados alinhados com distribuições estatísticas inspiradas em:
+Gerado sinteticamente com distribuições calibradas para o sensor real:
 
-- DCASE Task 2
-- MIMII Dataset
-- sinais industriais sintéticos calibrados
+- **NORMAL**: ruído branco + harmônicos (80–200Hz, escala U[0.5, 2.0]) × amplitude U[0.45, 0.70]
+  - MFCC[1] resultante: −44..−31 (sensor real: −38 ± 5–8) ✓
+- **ANOMALIA**: mesmo sinal com 3–10 impulsos mecânicos aleatórios sobrepostos × amplitude U[0.65, 0.90]
 
-As amostras incluem condições normais, falhas impulsivas, assinaturas de rolamentos e eventos transientes.
+Dataset: 2.000 amostras (1.000 NORMAL + 1.000 ANOMALIA), split 70/10/20%.
+
+Inspirado em: DCASE Task 2, MIMII Dataset, sinais industriais sintéticos.
 
 ---
 
 # 🔮 Próximos Passos
 
-- Streaming serial de features para dashboard externo
-- Coleta de dados reais para refinamento do modelo
-- Features espectrais via FFT (Spectral Centroid, bandas de frequência)
-- Threshold adaptativo por média móvel
+- Coleta de dados reais de motor para fine-tuning do modelo
+- Delta-MFCC e Delta-Delta para capturar dinâmica temporal
+- Janela deslizante com overlap para detecção contínua
+- Dashboard serial para visualização em tempo real
+- Quantização INT8 com dataset real (atualmente float32)
 
 ---
 
@@ -349,21 +419,13 @@ Professor orientador: Rodrigo Kobashikawa Rosa
 
 # 👨‍💻 Autores
 
-Projeto desenvolvido por:
-
 - Julio Cesar Lumke
 - Emanoel Spanhol
 
-Áreas de pesquisa:
-
-- TinyML
-- Edge AI
-- Sistemas embarcados inteligentes
-- Detecção de anomalias acústicas
-- Inteligência Artificial embarcada
+Áreas: TinyML · Edge AI · Sistemas embarcados inteligentes · Detecção de anomalias acústicas
 
 ---
 
 # 📜 Licença
 
-Projeto acadêmico e educacional desenvolvido para fins de estudo, pesquisa e experimentação em IA embarcada.
+Projeto acadêmico desenvolvido para fins de estudo, pesquisa e experimentação em IA embarcada.
