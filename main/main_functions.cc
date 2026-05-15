@@ -8,6 +8,7 @@
 #include "model.h"
 #include "test_data.h"
 #include "microphone.h"
+#include "feature_scaler.h"
 #include <math.h>
 
 #define SIMULATION_MODE true
@@ -36,9 +37,10 @@ void setup() {
     return;
   }
 
-  static tflite::MicroMutableOpResolver<2> resolver;
+  static tflite::MicroMutableOpResolver<3> resolver;
 
   resolver.AddFullyConnected();
+  resolver.AddRelu();
   resolver.AddLogistic();
 
   static tflite::MicroInterpreter static_interpreter(
@@ -156,12 +158,11 @@ void loop() {
     // crest factor
     float crest_factor = peak / (rms + 1e-6f);
 
-    // envia para o modelo
-    input->data.f[0] = rms;
-    input->data.f[1] = peak;
-    input->data.f[2] = kurtosis;
-    input->data.f[3] = skewness;
-    input->data.f[4] = crest_factor;
+    // normalização e envio para o modelo
+    float features[5] = {rms, peak, kurtosis, skewness, crest_factor};
+    for (int i = 0; i < 5; i++) {
+        input->data.f[i] = (features[i] - kScalerMean[i]) / kScalerStd[i];
+    }
 
     // inferência
     if (interpreter->Invoke() != kTfLiteOk) {
