@@ -2,8 +2,11 @@
 Treina MLP para detecção de anomalias acústicas usando features MFCC.
 
 Pipeline:
-  Áudio sintético (16kHz) → Pré-ênfase → Hamming → FFT → Mel(26) → log → DCT → 13 MFCCs
+  Áudio real (WAV 44100Hz) → resample 16kHz → frames 1024 → MFCC (13 coefs)  [NORMAL]
+  Frames reais + impulsos sintéticos → MFCC                                   [ANOMALIA]
   MFCCs → StandardScaler → MLP(13→16→32→1)
+
+Se a pasta audios_proprios/ não existir, usa geração sintética calibrada.
 
 Gera:
   main/model_data.cc      <- modelo float32
@@ -15,9 +18,13 @@ Uso:
   python train_models.py
 """
 
+import os
+import wave
+import struct
 import numpy as np
 import tensorflow as tf
 from scipy.fft import fft as scipy_fft
+from scipy.signal import resample_poly
 
 np.random.seed(42)
 tf.random.set_seed(42)
@@ -33,8 +40,10 @@ F_MIN        = 20.0
 F_MAX        = 8000.0
 PREEMPH      = 0.97
 
+AUDIO_DIR    = "audios_proprios"
+
 # ---------------------------------------------------------------------------
-# Implementação MFCC em Python (espelha exatamente o mfcc.cc)
+# MFCC em Python (espelha exatamente o mfcc.cc)
 # ---------------------------------------------------------------------------
 def hz_to_mel(hz):
     return 2595.0 * np.log10(1.0 + hz / 700.0)
@@ -48,7 +57,6 @@ def build_mel_filterbank():
     mel_max = hz_to_mel(F_MAX)
     mel_points = np.linspace(mel_min, mel_max, N_MELS + 2)
     bin_points = np.floor((FRAME_SIZE + 1) * mel_to_hz(mel_points) / SAMPLE_RATE).astype(int)
-
     fb = np.zeros((N_MELS, n_bins), dtype=np.float32)
     for m in range(N_MELS):
         fl, fc, fr = bin_points[m], bin_points[m+1], bin_points[m+2]
@@ -62,17 +70,12 @@ def build_mel_filterbank():
 MEL_FB = build_mel_filterbank()
 
 def compute_mfcc(signal):
-    # 1. Pré-ênfase
     emphasized = np.concatenate([[signal[0]], signal[1:] - PREEMPH * signal[:-1]])
-    # 2. Janela Hamming
     window = 0.54 - 0.46 * np.cos(2 * np.pi * np.arange(FRAME_SIZE) / (FRAME_SIZE - 1))
     windowed = emphasized * window
-    # 3. FFT + espectro de potência
     spectrum = np.abs(scipy_fft(windowed, n=FRAME_SIZE)[:FRAME_SIZE//2+1]) ** 2
-    # 4. Banco de filtros Mel + log
     mel_energy = MEL_FB @ spectrum
     log_mel = np.log(mel_energy + 1e-10)
-    # 5. DCT-II → N_COEFFS
     n = np.arange(N_MELS)
     mfcc = np.array([
         np.sum(log_mel * np.cos(np.pi * c * (n + 0.5) / N_MELS))
@@ -81,19 +84,72 @@ def compute_mfcc(signal):
     return mfcc
 
 # ---------------------------------------------------------------------------
-# Geração de áudio sintético calibrado com sensor real INMP441
-#
-# Diagnóstico empírico mostrou:
-#   - Ruído branco puro (RMS~0.5): MFCC[1] ~ -50.7
-#   - Harmônicos + ruído (scale=1.0): MFCC[1] ~ -38.5
-#   - Sensor real: MFCC[1] ~ -38 ± 5-8
-#
-# Solução: ruído branco + harmônicos com escala variável U[0.5, 2.0]
-#   → MFCC[1] range -44..-31, std ~ 4 (compatível com sensor real)
+# Carrega WAV mono, reamostrado para SAMPLE_RATE
+# ---------------------------------------------------------------------------
+def load_wav(path):
+    with wave.open(path, 'rb') as w:
+        sr    = w.getframerate()
+        ch    = w.getnchannels()
+        sw    = w.getsampwidth()
+        nf    = w.getnframes()
+        raw   = w.readframes(nf)
+
+    fmt = {1: 'b', 2: 'h', 4: 'i'}[sw]
+    samples = np.array(struct.unpack(f'{nf * ch}{fmt}', raw), dtype=np.float32)
+
+    # Mix down para mono se necessário
+    if ch > 1:
+        samples = samples.reshape(-1, ch).mean(axis=1)
+
+    # Normaliza para [-1, 1]
+    max_val = float(2 ** (sw * 8 - 1))
+    samples /= max_val
+
+    # Resample para 16kHz usando fração racional
+    if sr != SAMPLE_RATE:
+        from math import gcd
+        g = gcd(SAMPLE_RATE, sr)
+        samples = resample_poly(samples, SAMPLE_RATE // g, sr // g).astype(np.float32)
+
+    return samples
+
+# ---------------------------------------------------------------------------
+# Extrai frames de FRAME_SIZE sem overlap
+# ---------------------------------------------------------------------------
+def extract_frames(signal):
+    frames = []
+    n_frames = len(signal) // FRAME_SIZE
+    for i in range(n_frames):
+        frame = signal[i * FRAME_SIZE : (i + 1) * FRAME_SIZE].copy()
+        # Remove DC do frame (mesmo que o firmware faz antes do RMS)
+        frame -= frame.mean()
+        rms = np.sqrt(np.mean(frame ** 2))
+        if rms >= 0.02:  # mesmo threshold do firmware
+            frames.append(frame)
+    return frames
+
+# ---------------------------------------------------------------------------
+# Gera anomalia adicionando impulsos sobre um frame real
+# ---------------------------------------------------------------------------
+def make_anomaly_frame(frame):
+    sig = frame.copy()
+    n_impulses = np.random.randint(3, 10)
+    for _ in range(n_impulses):
+        pos   = np.random.randint(0, FRAME_SIZE)
+        width = np.random.randint(2, 8)
+        amp   = np.random.uniform(1.5, 3.5)
+        start = max(0, pos - width)
+        end   = min(FRAME_SIZE, pos + width)
+        sig[start:end] += amp * np.random.choice([-1, 1])
+    sig /= (np.max(np.abs(sig)) + 1e-6)
+    return sig.astype(np.float32)
+
+# ---------------------------------------------------------------------------
+# Geração sintética (fallback se não houver áudios reais)
 # ---------------------------------------------------------------------------
 def generate_base_signal():
     t = np.linspace(0, FRAME_SIZE / SAMPLE_RATE, FRAME_SIZE)
-    fundamental = np.random.uniform(80, 200)
+    fundamental    = np.random.uniform(80, 200)
     harmonic_scale = np.random.uniform(0.5, 2.0)
     harmonics = np.zeros(FRAME_SIZE)
     for h in range(1, 6):
@@ -124,16 +180,6 @@ def generate_anomaly_signal():
 # ---------------------------------------------------------------------------
 # Dataset
 # ---------------------------------------------------------------------------
-def generate_dataset(n_normal=1000, n_anomaly=1000):
-    print("  Gerando sinais normais...")
-    X_normal  = np.array([compute_mfcc(generate_normal_signal())  for _ in range(n_normal)])
-    print("  Gerando sinais de anomalia...")
-    X_anomaly = np.array([compute_mfcc(generate_anomaly_signal()) for _ in range(n_anomaly)])
-    X = np.vstack([X_normal, X_anomaly]).astype(np.float32)
-    y = np.hstack([np.zeros(n_normal), np.ones(n_anomaly)]).astype(np.float32)
-    idx = np.random.permutation(len(X))
-    return X[idx], y[idx]
-
 def split(X, y, val_ratio=0.1, test_ratio=0.2):
     n = len(X)
     n_test = int(n * test_ratio)
@@ -147,10 +193,51 @@ def split(X, y, val_ratio=0.1, test_ratio=0.2):
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
-print("="*55)
-print("  Gerando dataset com features MFCC...")
-print("="*55)
-X, y = generate_dataset()
+print("=" * 55)
+
+real_frames = []
+if os.path.isdir(AUDIO_DIR):
+    wav_files = sorted(f for f in os.listdir(AUDIO_DIR) if f.endswith(".wav"))
+    print(f"  Carregando {len(wav_files)} arquivos de {AUDIO_DIR}/")
+    print("  (todos tratados como NORMAL — anomalias geradas via impulsos)")
+    for fname in wav_files:
+        path = os.path.join(AUDIO_DIR, fname)
+        sig  = load_wav(path)
+        frames = extract_frames(sig)
+        real_frames.extend(frames)
+        print(f"    {fname}: {len(sig)/SAMPLE_RATE:.1f}s → {len(frames)} frames")
+    print(f"  Total frames reais: {len(real_frames)}")
+
+if real_frames:
+    # NORMAL: frames reais
+    # ANOMALIA: impulsos sobre frames reais (preserva distribuição espectral)
+    print("\n  Calculando MFCCs dos frames normais...")
+    X_normal_frames = [compute_mfcc(f) for f in real_frames]
+
+    print("  Gerando anomalias a partir dos frames reais...")
+    # Gera anomalia para cada frame normal (dataset balanceado)
+    anomaly_frames = [make_anomaly_frame(f) for f in real_frames]
+    X_anomaly_frames = [compute_mfcc(f) for f in anomaly_frames]
+
+    X_normal  = np.array(X_normal_frames,  dtype=np.float32)
+    X_anomaly = np.array(X_anomaly_frames, dtype=np.float32)
+    source = "áudios reais"
+else:
+    print("  audios_proprios/ não encontrada — usando geração sintética")
+    n = 1000
+    print("  Gerando sinais normais...")
+    X_normal  = np.array([compute_mfcc(generate_normal_signal())  for _ in range(n)], dtype=np.float32)
+    print("  Gerando sinais de anomalia...")
+    X_anomaly = np.array([compute_mfcc(generate_anomaly_signal()) for _ in range(n)], dtype=np.float32)
+    source = "síntese calibrada"
+
+X = np.vstack([X_normal, X_anomaly]).astype(np.float32)
+y = np.hstack([np.zeros(len(X_normal)), np.ones(len(X_anomaly))]).astype(np.float32)
+idx = np.random.permutation(len(X))
+X, y = X[idx], y[idx]
+
+print(f"\n  Dataset ({source}): {len(X_normal)} NORMAL + {len(X_anomaly)} ANOMALIA = {len(X)} total")
+
 X_train_raw, y_train, X_val_raw, y_val, X_test_raw, y_test = split(X, y)
 print(f"  Treino: {len(X_train_raw)} | Val: {len(X_val_raw)} | Teste: {len(X_test_raw)}")
 
@@ -162,7 +249,7 @@ X_train = (X_train_raw - scaler_mean) / scaler_std
 X_val   = (X_val_raw   - scaler_mean) / scaler_std
 X_test  = (X_test_raw  - scaler_mean) / scaler_std
 
-# Gera feature_scaler.h com 13 features MFCC
+# feature_scaler.h
 mean_vals = ", ".join(f"{v:.6f}f" for v in scaler_mean)
 std_vals  = ", ".join(f"{v:.6f}f" for v in scaler_std)
 scaler_lines = [
@@ -233,7 +320,7 @@ with open("main/model_data.cc", "w") as f:
     f.write(to_c_array(tflite_bytes, acc_train*100, acc_val*100, acc_test*100))
 print("  Salvo: main/model_data.cc")
 
-# Gera test_data.h com 20 amostras normalizadas (MFCC)
+# test_data.h com 20 amostras (10 normal + 10 anomalia)
 idx_normal  = np.where(y_test == 0)[0][:10]
 idx_anomaly = np.where(y_test == 1)[0][:10]
 idx_sel = np.concatenate([idx_normal, idx_anomaly])
@@ -267,8 +354,8 @@ with open("main/test_data.h", "w") as f:
     f.write("\n".join(td_lines))
 print("  Salvo: main/test_data.h")
 
-print("\n" + "="*55)
+print("\n" + "=" * 55)
 print("  TFLite: model_mfcc_mlp.tflite")
 print("Para gravar no ESP32-S3:")
 print("  idf.py build && idf.py flash monitor")
-print("="*55)
+print("=" * 55)

@@ -128,7 +128,7 @@ Durante os testes com a placa física, identificou-se incompatibilidade entre o 
 
 ## V2.0 — MFCC + MLP (versão atual)
 
-Substituição completa do pipeline de features: as 5 features estatísticas foram trocadas por **13 coeficientes MFCC**, implementados diretamente no firmware em C.
+Substituição completa do pipeline de features: as 5 features estatísticas foram trocadas por **13 coeficientes MFCC**, implementados diretamente no firmware em C. O firmware opera em **modo contínuo** — sem delay entre inferências, processando ~15 frames por segundo.
 
 **Motivação:** MFCC captura o timbre sonoro do motor (distribuição de energia nas frequências), que é muito mais discriminativo do que estatísticas de amplitude. Um motor saudável e um com falha têm assinaturas espectrais distintas mesmo com RMS similar.
 
@@ -137,7 +137,7 @@ Substituição completa do pipeline de features: as 5 features estatísticas for
 ```
 Microfone INMP441 (I2S @ 16kHz)
     ↓
-Frame de 1024 amostras (64ms)
+Frame de 1024 amostras (64ms) — modo contínuo, sem delay
     ↓
 Remoção de offset DC (subtração da média do frame)
     ↓
@@ -161,7 +161,7 @@ MLP(13→16→32→1)
     ↓
 Probabilidade instantânea [0.0 – 1.0]
     ↓
-Média móvel (5 frames ≈ 5s)
+Média móvel (5 frames ≈ 320ms)
     ↓
 Decisão: média ≥ 0.70 → ANOMALIA
 ```
@@ -181,14 +181,10 @@ Dense(1, sigmoid) →  33 parâmetros
 **Características:**
 - 801 parâmetros treináveis
 - Features: 13 coeficientes MFCC normalizados
-- Frame: 1024 amostras @ 16kHz (64ms)
+- Frame: 1024 amostras @ 16kHz (64ms), modo contínuo (~15 inferências/s)
 - FFT implementada em C (radix-2 Cooley-Tukey) no próprio firmware
-- Suavização temporal: média móvel de 5 frames (~5 segundos) com threshold 0.70
-- Acurácia: 91.9% treino / 86.5% val / 81.0% teste
-
-> A acurácia menor que a V1.2 (sintética) é esperada e intencional: o dataset V2.0 foi
-> calibrado para reproduzir a distribuição MFCC do sensor real, criando sobreposição
-> genuína entre classes — o modelo é mais honesto e robusto em hardware real.
+- Suavização temporal: média móvel de 5 frames (~320ms) com threshold 0.70
+- Acurácia: 99.9% treino / 99.2% val / 99.0% teste (dataset com áudios reais)
 
 **O que mudou em relação à V1.2:**
 
@@ -197,21 +193,23 @@ Dense(1, sigmoid) →  33 parâmetros
 | Features | 5 estatísticas (RMS, Peak...) | 13 MFCCs |
 | Extração | Loop simples sobre o buffer | FFT → Mel → log → DCT |
 | Buffer de áudio | 480 amostras (30ms) | 1024 amostras (64ms) |
+| Cadência de inferência | 1 frame/s (delay fixo) | ~15 frames/s (contínuo) |
 | Discriminação | Amplitude / forma do sinal | Timbre / espectro de frequências |
 | Remoção de DC | Não | Sim (média do frame subtraída antes do RMS) |
 | Threshold de silêncio | RMS bruto ≥ 0.45 | RMS_AC < 0.02 |
 | Decisão | P ≥ 0.50 (1 frame) | Média(5 frames) ≥ 0.70 |
-| Arquivos novos | — | `mfcc.cc`, `mfcc.h` |
+| Dataset | Sintético calibrado | Áudios reais + anomalias derivadas |
+| Arquivos novos | — | `mfcc.cc`, `mfcc.h`, `audios_proprios/` |
 | Parâmetros do modelo | 769 | 801 |
 | Robustez em hardware real | Baixa | Alta |
 
 **Dataset de treinamento V2.0:**
 
-Gerado com síntese de áudio calibrada empiricamente para reproduzir a distribuição MFCC do sensor real (INMP441):
-- **Sinal base**: ruído branco + harmônicos (fundamental 80–200 Hz, 5 parciais) com escala U[0.5, 2.0]
-  - Garante MFCC[1] na faixa −44..−31 (sensor real: −38 ± 5–8)
-- **NORMAL**: sinal base normalizado × amplitude U[0.45, 0.70]
-- **ANOMALIA**: sinal base + 3–10 impulsos aleatórios (amplitude 1.5–3.5×), normalizado × U[0.65, 0.90]
+Treinado com **áudios reais** gravados no ambiente do projeto (25 arquivos WAV, ~19s cada, 44,1kHz):
+- **NORMAL**: todos os 25 arquivos WAV → resample para 16kHz → 7.383 frames de 1024 amostras
+- **ANOMALIA**: cada frame NORMAL com 3–10 impulsos mecânicos aleatórios sobrepostos (amplitude 1.5–3.5×), preservando a distribuição espectral base do ambiente real
+
+Vantagem em relação à síntese pura: o StandardScaler e os pesos do modelo são calibrados diretamente com o espectro do ambiente real — elimina completamente o problema de distribuição MFCC entre treino e sensor.
 
 ---
 
@@ -255,7 +253,7 @@ Gerado com síntese de áudio calibrada empiricamente para reproduzir a distribu
 
 **6. Inferência:** MLP(13→16→32→1) via TFLite Micro
 
-**7. Suavização temporal:** média móvel das últimas 5 probabilidades (~5 segundos)
+**7. Suavização temporal:** média móvel das últimas 5 probabilidades (~320ms em modo contínuo)
 
 **8. Decisão:** média ≥ 0.70 → ANOMALIA (reduz falsos positivos de frames isolados)
 
@@ -268,18 +266,23 @@ detection_of_acoustic_anomalies/
 │
 ├── main/
 │   ├── main.cc                # Ponto de entrada
-│   ├── main_functions.cc      # Lógica principal (Setup/Loop)
+│   ├── main_functions.cc      # Lógica principal (Setup/Loop) — modo contínuo
 │   ├── mfcc.cc                # Implementação MFCC (FFT + Mel + DCT)
 │   ├── mfcc.h                 # Parâmetros e interface MFCC
 │   ├── microphone.cc          # Driver I2S (1024 samples @ 16kHz)
 │   ├── microphone.h           # Interface do microfone
 │   ├── model_data.cc          # Array do modelo TFLite (MFCC+MLP V2.0)
 │   ├── model.h                # Cabeçalho do modelo
-│   ├── feature_scaler.h       # StandardScaler para 13 MFCCs
+│   ├── feature_scaler.h       # StandardScaler calibrado com áudios reais
 │   ├── test_data.h            # Amostras MFCC normalizadas (simulação)
 │   └── output_handler.cc      # Logs e saídas
 │
-├── train_models.py            # Treinamento: síntese de áudio → MFCC → MLP
+├── audios_proprios/           # Áudios reais gravados no ambiente do projeto
+│   ├── normal_01.wav          #   WAV 44,1kHz mono, ~18-23s cada
+│   ├── ...
+│   └── anomaly_09.wav         #   (todos tratados como NORMAL no treino)
+│
+├── train_models.py            # Treinamento: áudios reais → MFCC → MLP
 ├── model_mfcc_mlp.tflite      # Modelo TFLite V2.0
 ├── build/                     # Gerado automaticamente
 ├── simulation.png             # Simulação Wokwi
@@ -342,10 +345,16 @@ pip install tensorflow numpy scipy
 python train_models.py
 ```
 
+O script detecta automaticamente a pasta `audios_proprios/`:
+- **Com áudios reais** (recomendado): extrai frames dos WAVs como NORMAL e gera anomalias sintéticas derivadas deles
+- **Sem a pasta**: usa geração sintética calibrada (fallback)
+
 Gera automaticamente:
 - `main/model_data.cc` — novo modelo
 - `main/feature_scaler.h` — parâmetros de normalização dos MFCCs
 - `main/test_data.h` — amostras de simulação atualizadas
+
+Para adicionar novos áudios de ambiente normal, basta colocar arquivos WAV em `audios_proprios/` e retreinar.
 
 ---
 
@@ -389,13 +398,18 @@ idf.py build && idf.py flash monitor
 
 # 📊 Dataset
 
-Gerado sinteticamente com distribuições calibradas para o sensor real:
+Treinado com **áudios reais** gravados no ambiente do projeto:
 
-- **NORMAL**: ruído branco + harmônicos (80–200Hz, escala U[0.5, 2.0]) × amplitude U[0.45, 0.70]
-  - MFCC[1] resultante: −44..−31 (sensor real: −38 ± 5–8) ✓
-- **ANOMALIA**: mesmo sinal com 3–10 impulsos mecânicos aleatórios sobrepostos × amplitude U[0.65, 0.90]
+| Origem | Classe | Quantidade |
+|---|---|---|
+| 25 arquivos WAV (44,1kHz → 16kHz) | NORMAL | 7.383 frames |
+| Impulsos sintéticos sobre frames reais | ANOMALIA | 7.383 frames |
+| **Total** | | **14.766 amostras** |
 
-Dataset: 2.000 amostras (1.000 NORMAL + 1.000 ANOMALIA), split 70/10/20%.
+Split: 70% treino / 10% validação / 20% teste.
+
+- **NORMAL**: todos os WAVs de `audios_proprios/` → resample 16kHz → frames de 1024 amostras (64ms), remoção de DC, descarte de silêncio (RMS_AC < 0.02)
+- **ANOMALIA**: cada frame NORMAL com 3–10 impulsos mecânicos aleatórios (amplitude 1.5–3.5×) sobrepostos — simula batidas de rolamento com a mesma base espectral do ambiente real
 
 Inspirado em: DCASE Task 2, MIMII Dataset, sinais industriais sintéticos.
 
@@ -403,11 +417,10 @@ Inspirado em: DCASE Task 2, MIMII Dataset, sinais industriais sintéticos.
 
 # 🔮 Próximos Passos
 
-- Coleta de dados reais de motor para fine-tuning do modelo
 - Delta-MFCC e Delta-Delta para capturar dinâmica temporal
-- Janela deslizante com overlap para detecção contínua
+- Janela deslizante com overlap para menor latência de detecção
 - Dashboard serial para visualização em tempo real
-- Quantização INT8 com dataset real (atualmente float32)
+- Quantização INT8 (atualmente float32)
 
 ---
 
